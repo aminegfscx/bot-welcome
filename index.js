@@ -1,52 +1,98 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 require('dotenv').config();
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers, 
+        GatewayIntentBits.GuildPresences 
     ]
 });
 
-const PREFIX = '!';
+// الأمر المطلوب
+const COMMAND = 'b!'; 
 
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
 });
 
 client.on('messageCreate', async (message) => {
-    // Ignore bot messages or messages without the correct prefix
-    if (message.author.bot || !message.content.startsWith(PREFIX)) return;
+    if (message.author.bot || message.content.trim() !== COMMAND) return;
+    if (!message.member.permissions.has('Administrator')) return;
 
-    const args = message.content.slice(PREFIX.length).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
+    // إنشاء الأزرار للخيارات الثلاثة
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('broadcast_all').setLabel('📢 الكل (All)').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('broadcast_online').setLabel('🟢 الأونلاين (Online)').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('broadcast_offline').setLabel('⚫ الأوفلاين (Offline)').setStyle(ButtonStyle.Secondary)
+    );
 
-    // Broadcast command: !broadcast <message>
-    if (command === 'broadcast') {
-        // Ensure only server administrators can broadcast
-        if (!message.member.permissions.has('Administrator')) {
-            return message.reply('❌ You do not have permission to use this command.');
+    const response = await message.reply({
+        content: '🎛️ **الرجاء اختيار نوع البث المراد إرساله:**',
+        components: [row]
+    });
+
+    // انتطار ضغط الزر من الشخص الذي كتب الأمر فقط
+    const collector = response.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 60000 // دقيقة واحدة للاختيار
+    });
+
+    collector.on('collect', async (interaction) => {
+        if (interaction.user.id !== message.author.id) {
+            return interaction.reply({ content: '❌ هذا الأمر ليس لك.', ephemeral: true });
         }
 
-        const broadcastMessage = args.join(' ');
-        if (!broadcastMessage) {
-            return message.reply('❌ Please provide a message to broadcast. Usage: `!broadcast <your message>`');
-        }
+        const targetType = interaction.customId; // معرفة أي زر تم ضغطه
+        let targetLabel = targetType === 'broadcast_all' ? 'الكل' : targetType === 'broadcast_online' ? 'الأونلاين' : 'الأوفلاين';
 
-        let sentCount = 0;
+        // طلب نص الرسالة من المسؤول
+        await interaction.update({ content: `📝 ممتاز! اخترت البث لـ **${targetLabel}**.\nالآن قم بكتابة الرسالة التي تريد إرسالها في الشات هنا:`, components: [] });
 
-        // Iterate through all text channels the bot can see in the server
-        message.guild.channels.cache.forEach((channel) => {
-            if (channel.isTextBased()) {
-                channel.send(broadcastMessage)
-                    .then(() => sentCount++)
-                    .catch(err => console.error(`Could not send to ${channel.name}:`, err.message));
-            }
+        // تجميع الرسالة القادمة من نفس الشخص
+        const messageCollector = message.channel.createMessageCollector({
+            filter: m => m.author.id === message.author.id,
+            max: 1,
+            time: 120000 // دقيقتين لكتابة الرسالة
         });
 
-        await message.reply(`📢 Broadcast sent to available channels successfully!`);
-    }
+        messageCollector.on('collect', async (msg) => {
+            const broadcastMessage = msg.content;
+            await msg.reply('⏳ جاري جلب الأعضاء وبدء عملية البث الإذاعي الخاص بك...');
+
+            try {
+                const members = await message.guild.members.fetch();
+                let successCount = 0;
+
+                for (const [id, member] of members) {
+                    if (member.user.bot) continue;
+
+                    const status = member.presence?.status || 'offline';
+                    const isOnline = ['online', 'idle', 'dnd'].includes(status);
+
+                    if (targetType === 'broadcast_all' || 
+                       (targetType === 'broadcast_online' && isOnline) || 
+                       (targetType === 'broadcast_offline' && !isOnline)) {
+                        
+                        try {
+                            await member.send(broadcastMessage);
+                            successCount++;
+                            await new Promise(resolve => setTimeout(resolve, 500)); // تأخير لنصف ثانية لتجنب الحظر
+                        } catch (err) {
+                            console.log(`تعذر الإرسال لـ ${member.user.tag}`);
+                        }
+                    }
+                }
+
+                await message.channel.send(`✅ **اكتمل البث!** تم الإرسال بنجاح إلى **${successCount}** عضو من فئة (${targetLabel}).`);
+            } catch (error) {
+                console.error(error);
+                await message.channel.send('❌ حدث خطأ أثناء محاولة جلب الأعضاء أو البث.');
+            }
+        });
+    });
 });
 
-client.login(process.env.MTUxNzYyOTI5NTM3NDEwNjc0NQ.GXzbUV.qV5T-srpw6Ct3eaAogIXv5nvjr_cqb6giboLwI);
+client.login(process.env.DISCORD_TOKEN);
